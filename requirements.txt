@@ -3,3 +3,4 @@ uvicorn
 pillow
 imagehash
 piexif
+python-multipart
