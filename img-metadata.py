@@ -71,6 +71,15 @@ def extract_metadata(image_file):
             exif_summary['aperture'] = exif_ifd.get(piexif.ExifIFD.FNumber)
             exif_summary['focal_length'] = exif_ifd.get(piexif.ExifIFD.FocalLength)
             exif_summary['date_taken'] = exif_ifd.get(piexif.ExifIFD.DateTimeOriginal, b'').decode('utf-8', 'ignore')
+            exif_summary['shutter_speed'] = exif_ifd.get(piexif.ExifIFD.ShutterSpeedValue)
+            exif_summary['brightness_value'] = exif_ifd.get(piexif.ExifIFD.BrightnessValue)
+            exif_summary['white_balance'] = exif_ifd.get(piexif.ExifIFD.WhiteBalance)
+            exif_summary['metering_mode'] = exif_ifd.get(piexif.ExifIFD.MeteringMode)
+            exif_summary['lens_model'] = exif_ifd.get(piexif.ExifIFD.LensModel, b'').decode('utf-8', 'ignore')
+            exif_summary['exposure_program'] = exif_ifd.get(piexif.ExifIFD.ExposureProgram)
+            exif_summary['software'] = zeroth_ifd.get(piexif.ImageIFD.Software, b'').decode('utf-8', 'ignore')
+            exif_summary['orientation'] = zeroth_ifd.get(piexif.ImageIFD.Orientation)
+            exif_summary['flash_fired'] = exif_ifd.get(piexif.ExifIFD.Flash)
 
             if gps_ifd:
                 gps_data = get_gps_info(gps_ifd)
@@ -82,20 +91,27 @@ def extract_metadata(image_file):
     metadata['exif'] = exif_summary
     metadata['gps'] = gps_data
 
-    # Perceptual Hash
+    # Multi-hash for advanced duplicate/similarity detection
     try:
         metadata['perceptual_hash'] = str(imagehash.phash(image))
+        metadata['average_hash'] = str(imagehash.average_hash(image))
+        metadata['difference_hash'] = str(imagehash.dhash(image))
+        metadata['wavelet_hash'] = str(imagehash.whash(image))
     except:
-        metadata['perceptual_hash'] = None
+        metadata['hashes'] = "Unable to compute hashes"
 
-    # Histogram Data
+    # Histogram Data (mean, median, stddev, rms, and full bins)
     try:
         stat = ImageStat.Stat(image.convert('RGB'))
         metadata['histogram_mean'] = stat.mean
         metadata['histogram_median'] = stat.median
         metadata['histogram_stddev'] = stat.stddev
+        metadata['histogram_rms'] = stat.rms
+
+        histogram_bins = image.convert('RGB').histogram()
+        metadata['histogram_bins'] = histogram_bins  # List of 768 values (256 per R, G, B)
     except:
-        metadata['histogram'] = None
+        metadata['histogram'] = "Unable to compute histogram"
 
     return metadata
 
