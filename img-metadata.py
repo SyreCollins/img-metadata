@@ -44,13 +44,13 @@ def extract_metadata(image_file):
     try:
         if hasattr(image_file, 'fileno'):
             metadata['file_size_bytes'] = os.fstat(image_file.fileno()).st_size
-    else:
-        # For BytesIO or streams without fileno
-        current_pos = image_file.tell()
-        image_file.seek(0, os.SEEK_END)
-        size = image_file.tell()
-        image_file.seek(current_pos, os.SEEK_SET)
-        metadata['file_size_bytes'] = size
+        else:
+            # For BytesIO or streams without fileno
+            current_pos = image_file.tell()
+            image_file.seek(0, os.SEEK_END)
+            size = image_file.tell()
+            image_file.seek(current_pos, os.SEEK_SET)
+            metadata['file_size_bytes'] = size
     except Exception:
         metadata['file_size_bytes'] = None
 
