@@ -6,9 +6,19 @@ import imagehash
 import piexif
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
 
 app = FastAPI(title="Image Metadata Extractor")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 def get_gps_info(gps_ifd):
     try:
