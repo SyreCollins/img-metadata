@@ -3,11 +3,12 @@ import os
 import json
 from PIL import Image, ImageCms, ImageStat
 import imagehash
-import piexif
+import exifread
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
+from collections import Counter
 
 app = FastAPI(title="Image Metadata Extractor")
 
@@ -19,30 +20,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def extract_exif_with_exifread(image_file):
+    image_file.seek(0)
+    tags = exifread.process_file(image_file, details=False)
+    exif_data = {}
+    gps_data = {}
+    for tag in tags.keys():
+        clean_tag = str(tag)
+        if clean_tag.startswith("GPS"):
+            gps_data[clean_tag] = str(tags[tag])
+        else:
+            exif_data[clean_tag] = str(tags[tag])
+    return exif_data, gps_data
 
-def get_gps_info(gps_ifd):
-    try:
-        def convert_to_degrees(value):
-            d, m, s = value
-            return d[0]/d[1] + m[0]/m[1]/60 + s[0]/s[1]/3600
+def extract_dominant_colors(image, num_colors=5):
+    small_image = image.resize((100, 100))
+    pixels = list(small_image.getdata())
+    counter = Counter(pixels)
+    most_common = counter.most_common(num_colors)
+    color_info = []
+    for color, count in most_common:
+        hex_color = '#%02x%02x%02x' % color if isinstance(color, tuple) else str(color)
+        color_info.append({
+            "color": hex_color,
+            "count": count
+        })
+    return color_info
 
-        lat = convert_to_degrees(gps_ifd[2])
-        if gps_ifd[1] == b'S':
-            lat = -lat
-        lon = convert_to_degrees(gps_ifd[4])
-        if gps_ifd[3] == b'W':
-            lon = -lon
-
-        alt = gps_ifd[6][0] / gps_ifd[6][1] if 6 in gps_ifd else None
-
-        return {
-            "latitude": lat,
-            "longitude": lon,
-            "altitude": alt,
-            "google_maps": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-        }
-    except:
-        return {}
+def calculate_aspect_ratio_and_mp(size):
+    width, height = size
+    def gcd(a, b):
+        return a if b == 0 else gcd(b, a % b)
+    divisor = gcd(width, height)
+    aspect_ratio = f"{width // divisor}:{height // divisor}"
+    megapixels = round((width * height) / 1_000_000, 2)
+    return aspect_ratio, megapixels
 
 def extract_metadata(image_file):
     metadata = {}
@@ -51,11 +63,12 @@ def extract_metadata(image_file):
     metadata['mode'] = image.mode
     metadata['size'] = image.size
     metadata['filename'] = getattr(image_file, 'name', 'unknown')
+
+    # File size detection
     try:
         if hasattr(image_file, 'fileno'):
             metadata['file_size_bytes'] = os.fstat(image_file.fileno()).st_size
         else:
-            # For BytesIO or streams without fileno
             current_pos = image_file.tell()
             image_file.seek(0, os.SEEK_END)
             size = image_file.tell()
@@ -69,70 +82,54 @@ def extract_metadata(image_file):
     if icc_profile:
         try:
             profile = ImageCms.getOpenProfile(BytesIO(icc_profile))
-            metadata['icc_profile'] = profile.profile.product_desc.decode('utf-8', errors='ignore')
+            desc = profile.profile.product_desc.decode('utf-8', errors='ignore').strip()
+            metadata['icc_profile'] = desc if desc else "ICC profile embedded but no description provided."
         except:
-            metadata['icc_profile'] = "Embedded ICC profile found, could not parse description"
+            metadata['icc_profile'] = "Embedded ICC profile detected but unreadable. Likely sRGB or camera-specific."
     else:
-        metadata['icc_profile'] = None
+        metadata['icc_profile'] = "No ICC profile embedded."
 
-    # EXIF Metadata
-    exif_summary = {}
-    gps_data = {}
+    # Aspect ratio and megapixels
+    aspect_ratio, megapixels = calculate_aspect_ratio_and_mp(image.size)
+    metadata['aspect_ratio'] = aspect_ratio
+    metadata['megapixels'] = megapixels
+
+    # Dominant Colors
     try:
-        if "exif" in image.info:
-            exif_dict = piexif.load(image.info["exif"])
-            zeroth_ifd = exif_dict["0th"]
-            exif_ifd = exif_dict["Exif"]
-            gps_ifd = exif_dict["GPS"]
+        metadata['dominant_colors'] = extract_dominant_colors(image, num_colors=5)
+    except:
+        metadata['dominant_colors'] = "Unable to extract dominant colors."
 
-            exif_summary['camera_make'] = zeroth_ifd.get(piexif.ImageIFD.Make, b'').decode('utf-8', 'ignore')
-            exif_summary['camera_model'] = zeroth_ifd.get(piexif.ImageIFD.Model, b'').decode('utf-8', 'ignore')
-            exif_summary['iso'] = exif_ifd.get(piexif.ExifIFD.ISOSpeedRatings)
-            exif_summary['exposure_time'] = exif_ifd.get(piexif.ExifIFD.ExposureTime)
-            exif_summary['aperture'] = exif_ifd.get(piexif.ExifIFD.FNumber)
-            exif_summary['focal_length'] = exif_ifd.get(piexif.ExifIFD.FocalLength)
-            exif_summary['date_taken'] = exif_ifd.get(piexif.ExifIFD.DateTimeOriginal, b'').decode('utf-8', 'ignore')
-            exif_summary['shutter_speed'] = exif_ifd.get(piexif.ExifIFD.ShutterSpeedValue)
-            exif_summary['brightness_value'] = exif_ifd.get(piexif.ExifIFD.BrightnessValue)
-            exif_summary['white_balance'] = exif_ifd.get(piexif.ExifIFD.WhiteBalance)
-            exif_summary['metering_mode'] = exif_ifd.get(piexif.ExifIFD.MeteringMode)
-            exif_summary['lens_model'] = exif_ifd.get(piexif.ExifIFD.LensModel, b'').decode('utf-8', 'ignore')
-            exif_summary['exposure_program'] = exif_ifd.get(piexif.ExifIFD.ExposureProgram)
-            exif_summary['software'] = zeroth_ifd.get(piexif.ImageIFD.Software, b'').decode('utf-8', 'ignore')
-            exif_summary['orientation'] = zeroth_ifd.get(piexif.ImageIFD.Orientation)
-            exif_summary['flash_fired'] = exif_ifd.get(piexif.ExifIFD.Flash)
-
-            if gps_ifd:
-                gps_data = get_gps_info(gps_ifd)
-        else:
-            exif_summary['info'] = "No EXIF data found in image."
+    # EXIF and GPS via exifread
+    try:
+        image_file.seek(0)
+        exif_data, gps_data = extract_exif_with_exifread(image_file)
+        metadata['exif'] = exif_data if exif_data else "No EXIF data found."
+        metadata['gps'] = gps_data if gps_data else "No GPS data found."
     except Exception as e:
-        exif_summary['error'] = str(e)
+        metadata['exif'] = f"Error extracting EXIF: {str(e)}"
+        metadata['gps'] = "No GPS data found."
 
-    metadata['exif'] = exif_summary
-    metadata['gps'] = gps_data
-
-    # Multi-hash for advanced duplicate/similarity detection
+    # Hashes
     try:
         metadata['perceptual_hash'] = str(imagehash.phash(image))
         metadata['average_hash'] = str(imagehash.average_hash(image))
         metadata['difference_hash'] = str(imagehash.dhash(image))
         metadata['wavelet_hash'] = str(imagehash.whash(image))
     except:
-        metadata['hashes'] = "Unable to compute hashes"
+        metadata['hashes'] = "Unable to compute hashes."
 
-    # Histogram Data (mean, median, stddev, rms, and full bins)
+    # Histogram and RMS
     try:
         stat = ImageStat.Stat(image.convert('RGB'))
         metadata['histogram_mean'] = stat.mean
         metadata['histogram_median'] = stat.median
         metadata['histogram_stddev'] = stat.stddev
         metadata['histogram_rms'] = stat.rms
-
         histogram_bins = image.convert('RGB').histogram()
-        metadata['histogram_bins'] = histogram_bins  # List of 768 values (256 per R, G, B)
+        metadata['histogram_bins'] = histogram_bins
     except:
-        metadata['histogram'] = "Unable to compute histogram"
+        metadata['histogram'] = "Unable to compute histogram."
 
     return metadata
 
