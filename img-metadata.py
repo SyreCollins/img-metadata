@@ -41,7 +41,18 @@ def extract_metadata(image_file):
     metadata['mode'] = image.mode
     metadata['size'] = image.size
     metadata['filename'] = getattr(image_file, 'name', 'unknown')
-    metadata['file_size_bytes'] = os.fstat(image_file.fileno()).st_size if hasattr(image_file, 'fileno') else None
+    try:
+        if hasattr(image_file, 'fileno'):
+            metadata['file_size_bytes'] = os.fstat(image_file.fileno()).st_size
+    else:
+        # For BytesIO or streams without fileno
+        current_pos = image_file.tell()
+        image_file.seek(0, os.SEEK_END)
+        size = image_file.tell()
+        image_file.seek(current_pos, os.SEEK_SET)
+        metadata['file_size_bytes'] = size
+    except Exception:
+        metadata['file_size_bytes'] = None
 
     # ICC Profile
     icc_profile = image.info.get('icc_profile')
